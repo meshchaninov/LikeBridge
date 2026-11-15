@@ -1,0 +1,21 @@
+# HomeServer override: existing Traefik and DroppedNeedle networks.
+services:
+  likebridge:
+    networks: [default, traefik, arr_music]
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik
+      traefik.http.routers.likebridge.rule: Host(`likebridge.myhome.lan`)
+      traefik.http.routers.likebridge.entrypoints: websecure
+      traefik.http.routers.likebridge.tls: "true"
+      traefik.http.routers.likebridge.middlewares: public-lan-only@file
+      traefik.http.services.likebridge.loadbalancer.server.port: "8789"
+      traefik.http.routers.likebridge-http.rule: Host(`likebridge.myhome.lan`)
+      traefik.http.routers.likebridge-http.entrypoints: web
+      traefik.http.routers.likebridge-http.middlewares: public-lan-only@file,redirect-to-https@file
+      traefik.http.routers.likebridge-http.service: likebridge
+networks:
+  traefik:
+    external: true
+  arr_music:
+    external: true

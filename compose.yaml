@@ -1,0 +1,25 @@
+services:
+  likebridge:
+    image: likebridge:0.1.0
+    build: .
+    container_name: likebridge
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:8789:8789"
+    volumes:
+      - likebridge-data:/data
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.50
+    pids_limit: 64
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,noexec,nosuid
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+volumes:
+  likebridge-data:
