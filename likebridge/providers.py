@@ -61,7 +61,9 @@ def spotify_tracks(store, c):
             yield {'source_id': str(t['id']), 'title': t['name'],
                    'artist': ', '.join(x['name'] for x in (a.get('artists') or t.get('artists') or [])),
                    'album': a['name'], 'year': year(a.get('release_date')),
-                   'source_url': t.get('external_urls', {}).get('spotify', '')}
+                   'source_url': t.get('external_urls', {}).get('spotify', ''),
+                   'cover_url': next((image['url'] for image in reversed(a.get('images') or []) if image.get('url') and (image.get('width') or 300) >= 200),
+                                     next((image.get('url') for image in (a.get('images') or []) if image.get('url')), None))}
         url = page.get('next')
 
 
@@ -81,7 +83,9 @@ def yandex_tracks(store, c):
                 yield {'source_id': str(t.id), 'title': t.title,
                        'artist': ', '.join(x.name for x in (a.artists or t.artists)),
                        'album': a.title, 'year': a.year,
-                       'source_url': f'https://music.yandex.ru/album/{a.id}/track/{t.id}'}
+                       'source_url': f'https://music.yandex.ru/album/{a.id}/track/{t.id}',
+                       'cover_url': ('https://' + (getattr(a, 'cover_uri', None) or '').removeprefix('https://').replace('%%', '300x300'))
+                                    if getattr(a, 'cover_uri', None) else None}
     except Exception as exc:
         if isinstance(exc, ProviderError):
             raise
@@ -116,7 +120,9 @@ def apple_tracks(store, c):
         catalog = (t.get('relationships', {}).get('catalog', {}).get('data') or [{}])[0]
         yield {'source_id': t['id'], 'title': a.get('name', ''), 'artist': a.get('artistName', ''),
                'album': a['albumName'], 'year': year(a.get('releaseDate')),
-               'source_url': catalog.get('attributes', {}).get('url', '')}
+               'source_url': catalog.get('attributes', {}).get('url', ''),
+               'cover_url': ((a.get('artwork') or catalog.get('attributes', {}).get('artwork') or {}).get('url') or '')
+                            .replace('{w}', '300').replace('{h}', '300').replace('{f}', 'jpg') or None}
 
 
 PROVIDERS = {'yandex': yandex_tracks, 'spotify': spotify_tracks, 'apple': apple_tracks}

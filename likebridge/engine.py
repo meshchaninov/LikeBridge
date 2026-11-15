@@ -32,7 +32,7 @@ def rank(track, candidates):
         score = title * .60 + artist * .40
         if track.get('year') and c.get('year') and track['year'] != c['year']:
             score -= .08
-        ranked.append({**{k: c.get(k) for k in ('musicbrainz_id', 'title', 'artist', 'year', 'in_library', 'requested', 'type_info')},
+        ranked.append({**{k: c.get(k) for k in ('musicbrainz_id', 'title', 'artist', 'year', 'in_library', 'requested', 'type_info', 'cover_url', 'album_thumb_url')},
                        'confidence': round(score, 3)})
     # Same release-group can appear twice; it is one candidate.
     unique = {}
@@ -135,6 +135,10 @@ class Engine:
                     (provider,source_id,title,artist,album,year,source_url,status,created,updated)
                     VALUES (?,?,?,?,?,?,?,?,?,?)''', (provider, t['source_id'], t['title'], t['artist'], t['album'],
                     t.get('year'), t.get('source_url', ''), 'baseline' if baseline else 'pending', now, now))
+                if t.get('cover_url'):
+                    # Refresh artwork for old likes without changing processing state.
+                    db.execute('UPDATE tracks SET cover_url=? WHERE provider=? AND source_id=?',
+                               (t['cover_url'], provider, t['source_id']))
             count += 1
         with self.store.db() as db:
             db.execute('UPDATE accounts SET initialized=1,last_sync=?,error=NULL,count=? WHERE provider=?',

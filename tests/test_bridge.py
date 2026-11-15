@@ -130,11 +130,12 @@ def test_spotify_refresh_and_pagination(tmp_path,monkeypatch):
     def fake(method,url,**kw):
         calls.append((method,url,kw))
         if method=='POST': return {'access_token':'new','refresh_token':'rotated','expires_in':3600}
-        if 'offset' in url: return {'items':[{'track':{'id':'two','name':'Song2','album':{'name':'Album','artists':[{'name':'Artist'}],'release_date':'2020'}}}],'next':None}
-        return {'items':[{'track':None},{'track':{'id':'one','name':'Song','album':{'name':'Album','artists':[{'name':'Artist'}],'release_date':'2020'}}}], 'next':'https://api.spotify.com/v1/me/tracks?offset=50'}
+        if 'offset' in url: return {'items':[{'track':{'id':'two','name':'Song2','album':{'name':'Album','artists':[{'name':'Artist'}],'release_date':'2020','images':None}}}],'next':None}
+        return {'items':[{'track':None},{'track':{'id':'one','name':'Song','album':{'name':'Album','artists':[{'name':'Artist'}],'release_date':'2020','images':[{'url':'https://i.scdn.co/large','width':640},{'url':'https://i.scdn.co/medium','width':300},{'url':'https://i.scdn.co/small','width':64}]}}}], 'next':'https://api.spotify.com/v1/me/tracks?offset=50'}
     monkeypatch.setattr('likebridge.providers.http',fake)
     items=list(spotify_tracks(store,{'refresh_token':'old','client_id':'id'}))
     assert [t['source_id'] for t in items]==['one','two']
+    assert items[0]['cover_url']=='https://i.scdn.co/medium'
     assert store.credentials('spotify')['refresh_token']=='rotated'
     assert calls[1][2]['headers']['Authorization']=='Bearer new'
 
@@ -143,10 +144,12 @@ def test_apple_only_selected_playlist_and_pagination(monkeypatch):
     calls=[]
     def fake(method,url,**kw):
         calls.append(url)
-        return {'data':[{'id':'song','attributes':{'name':'Song','albumName':'Album','artistName':'Artist'}}],
+        return {'data':[{'id':'song','attributes':{'name':'Song','albumName':'Album','artistName':'Artist','artwork':{'url':'https://is1-ssl.mzstatic.com/{w}x{h}bb.{f}'}}}],
                 'next':'/v1/me/library/playlists/p.favorites/tracks?offset=100' if len(calls)==1 else None}
     monkeypatch.setattr('likebridge.providers.http',fake)
-    assert len(list(apple_tracks(None,{'playlist_id':'p.favorites','developer_token':'d','user_token':'u'})))==2
+    items=list(apple_tracks(None,{'playlist_id':'p.favorites','developer_token':'d','user_token':'u'}))
+    assert len(items)==2
+    assert items[0]['cover_url']=='https://is1-ssl.mzstatic.com/300x300bb.jpg'
     assert all('/p.favorites/tracks' in url for url in calls)
 
 
@@ -202,10 +205,11 @@ def test_yandex_metadata_batches_preserve_album(monkeypatch):
         def users_likes_tracks(self): return N(tracks=[N(track_id=f'{i}:42') for i in range(51)])
         def tracks(self,ids):
             seen.append(ids)
-            return [N(id=x.split(':')[0],title='Song',albums=[N(id=42,title='Album',year=2020,artists=[N(name='Artist')])],artists=[]) for x in ids]
+            return [N(id=x.split(':')[0],title='Song',albums=[N(id=42,title='Album',year=2020,cover_uri='avatars.yandex.net/get-music-content/example/%%',artists=[N(name='Artist')])],artists=[]) for x in ids]
     monkeypatch.setattr(yandex_music,'Client',FakeClient)
     result=list(yandex_tracks(None,{'token':'test-token'}))
     assert len(result)==51 and [len(x) for x in seen]==[50,1]
+    assert result[0]['cover_url']=='https://avatars.yandex.net/get-music-content/example/300x300'
     assert result[0]['album']=='Album' and result[0]['source_url'].endswith('/album/42/track/0')
 
 
@@ -234,3 +238,39 @@ def test_manual_resend_requires_explicit_action(app,client):
     with store.db() as db:
         assert db.execute('SELECT COUNT(*) FROM deliveries').fetchone()[0]==0
         assert db.execute('SELECT status FROM tracks').fetchone()[0]=='review'
+
+
+def test_cover_upgrade_preserves_existing_queue_and_backfills_old_likes(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    track = insert_track(store)
+    Engine(store).update(track['id'], status='sent', mbid=MBID)
+    with store.db() as db:
+        db.execute('ALTER TABLE tracks DROP COLUMN cover_url')
+        db.execute('INSERT INTO deliveries VALUES (?,?,?,?)', (MBID, 'sent', '', time.time()))
+    migrated = Store(tmp_path)
+    migrated.account('spotify', {})
+    image = 'https://i.scdn.co/image/example'
+    monkeypatch.setitem(__import__('likebridge.engine', fromlist=['PROVIDERS']).PROVIDERS,
+                        'spotify', lambda *args: iter([{**TRACK, 'cover_url': image}]))
+    Engine(migrated).sync_provider('spotify')
+    with migrated.db() as db:
+        rows = db.execute('SELECT status,mbid,cover_url FROM tracks').fetchall()
+        assert len(rows) == 1
+        assert tuple(rows[0]) == ('sent', MBID, image)
+        assert db.execute('SELECT status FROM deliveries').fetchone()[0] == 'sent'
+    assert Store(tmp_path)  # Additive upgrade is idempotent.
+
+
+def test_queue_api_and_candidate_ranking_keep_cover_urls(app, client):
+    store = app.extensions['store']
+    t = insert_track(store)
+    image = 'https://i.scdn.co/image/example'
+    candidates = rank(TRACK, [{**CANDIDATE, 'cover_url': image}])
+    app.extensions['engine'].update(t['id'], candidates=json.dumps(candidates), status='review')
+    with store.db() as db:
+        db.execute('UPDATE tracks SET cover_url=? WHERE id=?', (image, t['id']))
+    result = client.get('/api/tracks').json['items'][0]
+    assert result['cover_url'] == image
+    assert result['candidates'][0]['cover_url'] == image
+    assert 'https://i.scdn.co' in client.get('/').headers['Content-Security-Policy']
+    assert 'https://coverartarchive.org' in client.get('/').headers['Content-Security-Policy']

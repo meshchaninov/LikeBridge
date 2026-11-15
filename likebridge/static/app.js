@@ -55,9 +55,30 @@ async function refresh() {
   if (!formFilled) {fillForm($('#destination-form'), state.destination);fillForm($('#settings-form'), state.settings);formFilled = true;}
   if (currentView === 'queue') await loadTracks();
 }
+function artworkURL(value, mbid) {
+  if (value) {
+    try {
+      const url = new URL(value);
+      const host = url.hostname;
+      const allowed = ['i.scdn.co','avatars.yandex.net','avatars.mds.yandex.net','avatars.mds.yandex.com','coverartarchive.org'];
+      if (url.protocol === 'https:' && !url.username && !url.password &&
+          (allowed.includes(host) || host.endsWith('.mzstatic.com') || host.endsWith('.archive.org'))) return url.href;
+    } catch (_) { /* Missing/invalid artwork falls back to a known release group. */ }
+  }
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mbid || '')
+    ? `https://coverartarchive.org/release-group/${encodeURIComponent(mbid)}/front-250` : '';
+}
+function cover(value, mbid, small = false) {
+  const url = artworkURL(value, mbid);
+  return `<span class="album-cover${small ? ' album-cover-small' : ''}" aria-hidden="true"><span>♫</span>${url ? `<img src="${esc(url)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : ''}</span>`;
+}
+// Broken or unavailable artwork leaves the music-note placeholder, without inline handlers.
+document.addEventListener('error', event => {
+  if (event.target instanceof HTMLImageElement && event.target.closest('.album-cover')) event.target.remove();
+}, true);
 async function loadTracks() {
   const result = await api(`/api/tracks?status=${encodeURIComponent($('#status-filter').value)}&page=${currentPage}`);
-  $('#tracks').innerHTML = result.items.length ? result.items.map(t => `<article class="panel track" data-track="${t.id}"><div class="track-heading"><div><h3>${esc(t.album)}</h3><p class="muted">${esc(t.artist)} ${t.year ? '· '+esc(t.year) : ''}</p><p class="muted">♡ ${esc(t.title)} · ${names[t.provider] || esc(t.provider)}</p></div><span class="tag ${esc(t.status)}">${statuses[t.status] || esc(t.status)}</span></div>${t.error ? `<p class="error-text">${esc(t.error)}</p>` : ''}${t.status === 'review' ? `<div class="candidates">${t.candidates.map(c => `<div class="candidate"><div>${esc(c.title)}<small>${esc(c.artist)} ${c.year ? '· '+esc(c.year) : ''} · ${Math.round(c.confidence * 100)}% совпадения ${c.type_info ? '· '+esc(c.type_info) : ''}</small></div><button class="secondary" data-approve="${esc(c.musicbrainz_id)}">Выбрать ↗</button></div>`).join('')}</div><form class="search-row"><label>Поиск другого альбома<input name="query" value="${esc(t.artist + ' ' + t.album)}" required></label><button type="submit" class="secondary">Найти</button></form>` : ''}<div class="track-actions">${['sent','existing','duplicate'].includes(t.status) ? '' : '<button class="secondary" data-track-action="retry">'+(t.status === 'baseline' ? 'Обработать этот лайк' : 'Повторить поиск')+'</button><button class="text" data-track-action="skip">Пропустить</button>'}${t.mbid && ['retry','review'].includes(t.status) ? '<button class="text" data-track-action="allow_resend">Разрешить повторную заявку</button>' : ''}${t.mbid ? `<a class="text" href="https://musicbrainz.org/release-group/${encodeURIComponent(t.mbid)}" target="_blank" rel="noopener noreferrer">MusicBrainz ↗</a>` : ''}</div></article>`).join('') : '<div class="panel empty">Здесь пока нет треков.<br>Подключи аккаунт или выбери другой фильтр.</div>';
+  $('#tracks').innerHTML = result.items.length ? result.items.map(t => `<article class="panel track" data-track="${t.id}"><div class="track-heading">${cover(t.cover_url, t.mbid)}<div class="track-info"><h3>${esc(t.album)}</h3><p class="muted">${esc(t.artist)} ${t.year ? '· '+esc(t.year) : ''}</p><p class="muted">♡ ${esc(t.title)} · ${names[t.provider] || esc(t.provider)}</p></div><span class="tag ${esc(t.status)}">${statuses[t.status] || esc(t.status)}</span></div>${t.error ? `<p class="error-text">${esc(t.error)}</p>` : ''}${t.status === 'review' ? `<div class="candidates">${t.candidates.map(c => `<div class="candidate">${cover(c.cover_url || c.album_thumb_url, c.musicbrainz_id, true)}<div class="candidate-info">${esc(c.title)}<small>${esc(c.artist)} ${c.year ? '· '+esc(c.year) : ''} · ${Math.round(c.confidence * 100)}% совпадения ${c.type_info ? '· '+esc(c.type_info) : ''}</small></div><button class="secondary" data-approve="${esc(c.musicbrainz_id)}">Выбрать ↗</button></div>`).join('')}</div><form class="search-row"><label>Поиск другого альбома<input name="query" value="${esc(t.artist + ' ' + t.album)}" required></label><button type="submit" class="secondary">Найти</button></form>` : ''}<div class="track-actions">${['sent','existing','duplicate'].includes(t.status) ? '' : '<button class="secondary" data-track-action="retry">'+(t.status === 'baseline' ? 'Обработать этот лайк' : 'Повторить поиск')+'</button><button class="text" data-track-action="skip">Пропустить</button>'}${t.mbid && ['retry','review'].includes(t.status) ? '<button class="text" data-track-action="allow_resend">Разрешить повторную заявку</button>' : ''}${t.mbid ? `<a class="text" href="https://musicbrainz.org/release-group/${encodeURIComponent(t.mbid)}" target="_blank" rel="noopener noreferrer">MusicBrainz ↗</a>` : ''}</div></article>`).join('') : '<div class="panel empty">Здесь пока нет треков.<br>Подключи аккаунт или выбери другой фильтр.</div>';
   $('#page-info').textContent = `${result.total} треков · страница ${currentPage + 1}`;
   $('#prev').disabled = currentPage === 0;$('#next').disabled = (currentPage + 1) * 30 >= result.total;
   $('#process-baseline').disabled = !state.counts?.baseline;
@@ -77,7 +98,7 @@ function connection(provider) {
     $('#apple-authorize').onclick = () => action($('#apple-authorize'), async () => {
       const token = form.elements.developer_token.value.trim();if (!token) throw new Error('Введи developer token');
       if (!window.MusicKit) await new Promise((resolve,reject) => {const s = document.createElement('script');s.src='https://js-cdn.music.apple.com/musickit/v3/musickit.js';s.onload=resolve;s.onerror=() => reject(new Error('Не удалось загрузить MusicKit'));document.head.appendChild(s);});
-      await window.MusicKit.configure({developerToken:token,app:{name:'LikeBridge',build:'0.1.0'}});
+      await window.MusicKit.configure({developerToken:token,app:{name:'LikeBridge',build:'0.1.1'}});
       form.elements.user_token.value = await window.MusicKit.getInstance().authorize();toast('Вход выполнен. Получи плейлисты и выбери любимые песни.');
     });
     $('#apple-list').onclick = () => action($('#apple-list'), async () => {const data = await api('/api/accounts/apple/playlists', Object.fromEntries(new FormData(form)));form.elements.playlist_id.innerHTML = data.playlists.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');toast(`Найдено плейлистов: ${data.playlists.length}`);});

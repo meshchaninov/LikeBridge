@@ -44,6 +44,10 @@ class Store:
                 CREATE TABLE IF NOT EXISTS oauth (
                     state TEXT PRIMARY KEY, provider TEXT NOT NULL, data TEXT NOT NULL, expires REAL NOT NULL);
             ''')
+            # Additive migration: preserve existing queue, statuses and delivery history.
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(tracks)')}
+            if 'cover_url' not in columns:
+                db.execute('ALTER TABLE tracks ADD COLUMN cover_url TEXT')
         os.chmod(self.path, 0o600)
 
     @contextlib.contextmanager

@@ -22,3 +22,9 @@ Validated on 2026-11-15.
 Personal streaming accounts have not been authorized. A real personal like followed by an actual music download has therefore not been tested. Provider behavior is covered with isolated API responses; the deployed destination was checked with real authentication and search. No unrelated music was requested for testing.
 
 The deployed destination uses the v1 API. The configurable v3 option has not been validated against a v3 instance.
+
+## Album artwork update
+
+- 16 tests pass, including upgrading an existing database and refreshing artwork without resetting queue status or delivery history.
+- Spotify, Yandex and Apple adapters retain album artwork; ranked destination candidates retain artwork metadata.
+- Queue thumbnails load lazily in the browser. Missing or broken images use a fixed-size placeholder; no image cache or additional service is introduced.

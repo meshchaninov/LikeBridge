@@ -79,7 +79,7 @@ def create_app(data_dir=None, start_worker=False):
         response.headers['Content-Security-Policy'] = (
             "default-src 'self'; script-src 'self' https://js-cdn.music.apple.com; "
             "connect-src 'self' https://*.apple.com https://*.mzstatic.com; "
-            "style-src 'self'; img-src 'self' data: https://*.mzstatic.com; "
+            "style-src 'self'; img-src 'self' data: https://*.mzstatic.com https://i.scdn.co https://avatars.yandex.net https://avatars.mds.yandex.net https://avatars.mds.yandex.com https://coverartarchive.org https://*.archive.org; "
             "frame-src https://*.apple.com; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
         return response
 
@@ -101,7 +101,7 @@ def create_app(data_dir=None, start_worker=False):
     def health():
         with store.db() as db:
             db.execute('SELECT 1').fetchone()
-        return jsonify(status='ok', version='0.1.0')
+        return jsonify(status='ok', version='0.1.1')
 
     @app.get('/api/session')
     def get_session():
