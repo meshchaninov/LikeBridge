@@ -21,7 +21,7 @@ Validated on 2026-11-15.
 
 Personal streaming accounts have not been authorized. A real personal like followed by an actual music download has therefore not been tested. Provider behavior is covered with isolated API responses; the deployed destination was checked with real authentication and search. No unrelated music was requested for testing.
 
-The deployed destination uses the v1 API. The configurable v3 option has not been validated against a v3 instance.
+The destination was migrated to DroppedNeedle v3.0.0 on 2026-11-15. Bearer authentication, account probe, album search and track previews pass against the live v3 instance. Album and track intake paths have adapter coverage; v1 behavior remains covered.
 
 ## Album artwork update
 
@@ -41,3 +41,15 @@ The deployed destination uses the v1 API. The configurable v3 option has not bee
 - Tests cover authentication, explicit/on-demand lookup, missing previews, matching track versions, trusted HTTPS audio hosts, preserved queue state and lookup recovery after failure.
 
 - 23 tests pass, including preservation of source recording versions for preview matching. Real browser playback was verified: an audio sample loaded and ended at approximately 30 seconds, without errors; closing the player releases its audio source.
+
+## Individual track requests
+
+- 28 tests pass. Added tests for recording resolution within an album and via standalone search, request-kind settings and per-item overrides, album/recording history separation, two tracks from one album, cross-provider recording deduplication, already-owned recordings, and stale candidate rejection.
+- An isolated HTTP integration test verifies that single-track mode uses only `/tracks/{recording_mbid}/request` and never posts an album request.
+- Local browser validation covers selecting "track only", receiving the isolated destination's already-owned response, and persisting the default request kind. Existing album delivery history and queue modes survive the database upgrade.
+
+## Configurable automatic matching
+
+- 44 automated tests pass. Coverage includes the exact 70% boundary, rejection below the threshold, near-tied candidates, disabled automation, validation of out-of-range and non-finite values, and selective reprocessing of reviews while preserving baseline, skipped, completed and uncertain-delivery records.
+- Saving the threshold and preserving it after a browser reload were verified through the local UI. Existing settings adopt the 70% default once while retaining the sync interval.
+- The Linux amd64 image starts locally and returns a healthy HTTP response with the 70% default. Server deployment keeps the existing 128 MiB RAM limit and data volume.

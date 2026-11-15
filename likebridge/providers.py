@@ -75,6 +75,7 @@ def spotify_tracks(store, c):
                 continue
             yield {'source_id': str(t['id']), 'title': t['name'],
                    'liked_at': like_timestamp(item.get('added_at')),
+                   'track_artist': ', '.join(x['name'] for x in (t.get('artists') or a.get('artists') or [])),
                    'artist': ', '.join(x['name'] for x in (a.get('artists') or t.get('artists') or [])),
                    'album': a['name'], 'year': year(a.get('release_date')),
                    'source_url': t.get('external_urls', {}).get('spotify', ''),
@@ -102,6 +103,7 @@ def yandex_tracks(store, c):
                 title = f'{t.title} ({version})' if version and version.casefold() not in t.title.casefold() else t.title
                 yield {'source_id': str(t.id), 'title': title,
                        'liked_at': dates.get(str(t.id)),
+                       'track_artist': ', '.join(x.name for x in (t.artists or a.artists)),
                        'artist': ', '.join(x.name for x in (a.artists or t.artists)),
                        'album': a.title, 'year': a.year,
                        'source_url': f'https://music.yandex.ru/album/{a.id}/track/{t.id}',
@@ -140,7 +142,7 @@ def apple_tracks(store, c):
             continue
         catalog = (t.get('relationships', {}).get('catalog', {}).get('data') or [{}])[0]
         yield {'source_id': t['id'], 'title': a.get('name', ''), 'artist': a.get('artistName', ''),
-               'album': a['albumName'], 'year': year(a.get('releaseDate')),
+               'album': a['albumName'], 'year': year(a.get('releaseDate')), 'track_artist': a.get('artistName', ''),
                'source_url': catalog.get('attributes', {}).get('url', ''),
                'cover_url': ((a.get('artwork') or catalog.get('attributes', {}).get('artwork') or {}).get('url') or '')
                             .replace('{w}', '300').replace('{h}', '300').replace('{f}', 'jpg') or None}

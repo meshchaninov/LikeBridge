@@ -104,7 +104,7 @@ def create_app(data_dir=None, start_worker=False):
     def health():
         with store.db() as db:
             db.execute('SELECT 1').fetchone()
-        return jsonify(status='ok', version='0.1.4')
+        return jsonify(status='ok', version='0.1.5')
 
     @app.get('/api/session')
     def get_session():
@@ -169,16 +169,28 @@ def create_app(data_dir=None, start_worker=False):
                        callback_url=base_url() + '/oauth/spotify/callback')
 
     @app.post('/api/settings')
+    @exclusive
     def settings():
         data = request.json
         first = data.get('first_sync', 'baseline')
         if first not in ('baseline', 'all'):
             raise ValueError()
-        cfg = {'interval': max(120, min(86400, int(data['interval']))),
+        kind = data.get('request_kind', 'album')
+        if kind not in ('album', 'track'):
+            raise ValueError()
+        threshold = data.get('match_threshold', engine.settings()['match_threshold'])
+        if isinstance(threshold, bool):
+            raise ValueError()
+        threshold = float(threshold)
+        if not threshold.is_integer() or not 0 <= threshold <= 100:
+            raise ValueError()
+        cfg = {'match_threshold': int(threshold), 'request_kind': kind, 'interval': max(120, min(86400, int(data['interval']))),
                'batch_size': max(1, min(50, int(data['batch_size']))),
                'automatic': data.get('automatic') is True, 'first_sync': first}
         store.put('sync', cfg)
-        return jsonify(ok=True)
+        requeued = engine.reconsider_reviews()
+        engine.wake.set()
+        return jsonify(ok=True, requeued=requeued)
 
     @app.post('/api/destination')
     @exclusive
@@ -315,7 +327,7 @@ def create_app(data_dir=None, start_worker=False):
     @app.get('/api/tracks/<int:track_id>/preview')
     def track_preview(track_id):
         with store.db() as db:
-            row = db.execute('SELECT title,artist FROM tracks WHERE id=?', (track_id,)).fetchone()
+            row = db.execute("SELECT title,COALESCE(NULLIF(track_artist,''),artist) AS artist FROM tracks WHERE id=?", (track_id,)).fetchone()
         if not row:
             return jsonify(error='Трек не найден'), 404
         if not preview_lock.acquire(blocking=False):
@@ -335,13 +347,21 @@ def create_app(data_dir=None, start_worker=False):
             if not row:
                 return jsonify(error='Трек не найден'), 404
             t = dict(row)
-            if action == 'skip':
+            if action == 'request':
+                kind = request.json.get('request_kind')
+                if kind not in ('album', 'track'):
+                    raise ValueError()
+                engine.update(track_id, request_kind=kind, status='pending', mbid=None, candidates='[]',
+                              error=None, attempts=0, next_try=0)
+                engine.wake.set()
+            elif action == 'skip':
                 engine.update(track_id, status='skipped', error=None)
             elif action == 'allow_resend':
                 if not t.get('mbid'):
                     raise ValueError()
                 with store.db() as db:
-                    db.execute("DELETE FROM deliveries WHERE mbid=? AND status='uncertain'", (t['mbid'],))
+                    delivery_id = 'track:' + t['mbid'] if t['request_kind'] == 'track' else t['mbid']
+                    db.execute("DELETE FROM deliveries WHERE mbid=? AND status='uncertain'", (delivery_id,))
                 engine.update(track_id, status='review', error='Повторная отправка разрешена. Выберите альбом ещё раз.')
             elif action == 'retry':
                 engine.update(track_id, status='pending', error=None, attempts=0, next_try=0)
@@ -368,10 +388,14 @@ def create_app(data_dir=None, start_worker=False):
     @app.post('/api/baseline/process')
     def process_baseline():
         with store.db() as db:
-            result = db.execute("UPDATE tracks SET status='pending',updated=? WHERE status='baseline'", (time.time(),))
+            result = db.execute("UPDATE tracks SET status='pending',request_kind=?,updated=? WHERE status='baseline'",
+                                (engine.settings()['request_kind'], time.time()))
         engine.wake.set()
         return jsonify(ok=True, count=result.rowcount)
 
     if start_worker:
+        if 'match_threshold' not in store.get('sync', {}):
+            store.put('sync', engine.settings())
+            engine.reconsider_reviews()
         engine.start()
     return app

@@ -251,18 +251,21 @@ def test_cover_upgrade_preserves_existing_queue_and_backfills_old_likes(tmp_path
         db.execute('ALTER TABLE tracks DROP COLUMN cover_url')
         db.execute('DROP INDEX tracks_liked_at')
         db.execute('ALTER TABLE tracks DROP COLUMN liked_at')
+        db.execute('ALTER TABLE tracks DROP COLUMN request_kind')
+        db.execute('ALTER TABLE tracks DROP COLUMN track_artist')
         db.execute('INSERT INTO deliveries VALUES (?,?,?,?)', (MBID, 'sent', '', time.time()))
     migrated = Store(tmp_path)
     migrated.account('spotify', {})
     image = 'https://i.scdn.co/image/example'
     monkeypatch.setitem(__import__('likebridge.engine', fromlist=['PROVIDERS']).PROVIDERS,
-                        'spotify', lambda *args: iter([{**TRACK, 'title':'Song (Radio Edit)', 'cover_url': image, 'liked_at': 1709285400}]))
+                        'spotify', lambda *args: iter([{**TRACK, 'title':'Song (Radio Edit)', 'track_artist':'Singer', 'cover_url': image, 'liked_at': 1709285400}]))
     Engine(migrated).sync_provider('spotify')
     with migrated.db() as db:
         rows = db.execute('SELECT status,mbid,cover_url,liked_at FROM tracks').fetchall()
         assert len(rows) == 1
         assert tuple(rows[0]) == ('sent', MBID, image, 1709285400)
         assert db.execute('SELECT title FROM tracks').fetchone()[0]=='Song (Radio Edit)'
+        assert tuple(db.execute('SELECT request_kind,track_artist FROM tracks').fetchone())==('album','Singer')
         assert db.execute('SELECT status FROM deliveries').fetchone()[0] == 'sent'
     assert Store(tmp_path)  # Additive upgrade is idempotent.
 
@@ -380,3 +383,119 @@ def test_preview_failure_releases_lookup_lock_and_does_not_poison_sync(app,clien
     assert result.status_code==200 and result.json['available'] is False
     assert app.extensions['engine'].lock.acquire(blocking=False)
     app.extensions['engine'].lock.release()
+
+RID2 = 'b30d5bc0-9dab-4c58-bd1e-c2bd565281ce'
+ALBUM_ID = 'b30d5bc0-9dab-4c58-bd1e-c2bd565281cf'
+
+
+def recording_candidate(rid=MBID, title='Song'):
+    return {'request_kind':'track','musicbrainz_id':rid,'title':title,'artist':'Artist',
+            'album_title':'Album','release_group_mbid':ALBUM_ID,'duration_seconds':210,
+            'confidence':1.0,'in_library':False,'requested':False}
+
+
+def test_track_lookup_uses_recording_id_and_does_not_assume_album_ownership(monkeypatch):
+    from likebridge.recordings import search_tracks
+    class Destination:
+        def search_albums(self,track):
+            return [{**CANDIDATE,'musicbrainz_id':ALBUM_ID,'confidence':1.0,'in_library':True}]
+        def call(self,method,path,**kwargs):
+            assert method=='GET' and path==f'/albums/{ALBUM_ID}/tracks'
+            return {'selected_release_mbid':RID2,'tracks':[
+                {'title':'Another Song','recording_id':RID2,'length':200000},
+                {'title':'Song','recording_id':MBID,'length':210000}]}
+    def forbidden(*a,**kw): raise AssertionError('No direct search needed for a confident album match')
+    monkeypatch.setattr('likebridge.recordings.http',forbidden)
+    results=search_tracks(Destination(),{**TRACK,'request_kind':'track'})
+    assert results[0]['musicbrainz_id']==MBID
+    assert results[0]['release_group_mbid']==ALBUM_ID and results[0]['duration_seconds']==210
+    assert results[0]['in_library'] is False
+    assert confident(results)
+
+
+def test_track_lookup_falls_back_to_recordings_when_album_is_missing(monkeypatch):
+    from likebridge.recordings import search_tracks
+    calls=[]
+    class Destination:
+        def search_albums(self,track): return []
+    def search(method,url,**kwargs):
+        calls.append((url,kwargs))
+        return {'recordings':[{'id':MBID,'title':'Song','length':210000,
+            'artist-credit':[{'artist':{'name':'Singer','id':RID2}}],
+            'releases':[{'id':RID2,'title':'Album','date':'2020-01-01',
+                         'release-group':{'id':ALBUM_ID,'title':'Album'}}]}]}
+    monkeypatch.setattr('likebridge.recordings.http',search)
+    results=search_tracks(Destination(),{**TRACK,'request_kind':'track','track_artist':'Singer'})
+    assert results[0]['musicbrainz_id']==MBID and results[0]['artist']=='Singer'
+    assert 'artist:"Singer"' in calls[0][1]['params']['query']
+    assert calls[0][1]['params']['limit']==10 and confident(results)
+
+
+def test_track_mode_http_requests_are_separate_and_deduplicated(tmp_path,monkeypatch):
+    from likebridge.engine import Destination
+    received=[]
+    class DN(BaseHTTPRequestHandler):
+        def log_message(self,*args): pass
+        def do_POST(self):
+            payload=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            received.append((self.path,payload))
+            assert self.path.startswith('/api/v1/tracks/') and self.path.endswith('/request')
+            status='already_in_library' if RID2 in self.path else 'queued'
+            self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
+            self.wfile.write(json.dumps({'status':status,'task_id':'task'}).encode())
+    server=ThreadingHTTPServer(('127.0.0.1',0),DN)
+    threading.Thread(target=server.serve_forever,daemon=True).start()
+    try:
+        store=Store(tmp_path);store.put('destination',{'url':f'http://127.0.0.1:{server.server_port}','token':'test'})
+        tracks=[insert_track(store),insert_track(store,source_id='two'),insert_track(store,provider='yandex')]
+        with store.db() as db:
+            db.execute("UPDATE tracks SET request_kind='track'")
+            # A different entity type with the same UUID must not mask a recording request.
+            db.execute('INSERT INTO deliveries VALUES (?,?,?,?)',(MBID,'sent','',time.time()))
+        engine=Engine(store)
+        def resolve(track,query=None):
+            return [recording_candidate(RID2 if track['source_id']=='two' else MBID)]
+        monkeypatch.setattr(engine.destination,'search',resolve)
+        monkeypatch.setattr(engine.stop,'wait',lambda _:False)
+        engine.process()
+        restarted=Engine(Store(tmp_path));monkeypatch.setattr(restarted.destination,'search',resolve);restarted.process()
+        assert len(received)==2
+        assert all(p['release_group_mbid']==ALBUM_ID and p['track_title']=='Song' for _,p in received)
+        with store.db() as db:
+            assert [r[0] for r in db.execute('SELECT status FROM tracks ORDER BY id')]==['sent','existing','duplicate']
+            assert db.execute('SELECT status FROM deliveries WHERE mbid=?',('track:'+MBID,)).fetchone()[0]=='sent'
+            assert db.execute('SELECT status FROM deliveries WHERE mbid=?',(MBID,)).fetchone()[0]=='sent'
+    finally:server.shutdown();server.server_close()
+
+
+def test_request_kind_settings_and_per_track_choice_preserve_history(app,client,monkeypatch):
+    store=app.extensions['store'];t=insert_track(store)
+    app.extensions['engine'].update(t['id'],status='baseline',candidates=json.dumps([CANDIDATE]),mbid=MBID)
+    payload={'interval':600,'batch_size':10,'automatic':True,'first_sync':'baseline','request_kind':'track'}
+    assert post(client,'/api/settings',payload).status_code==200
+    assert client.get('/api/tracks').json['items'][0]['request_kind']=='album'
+    assert post(client,'/api/baseline/process').status_code==200
+    assert client.get('/api/tracks').json['items'][0]['request_kind']=='track'
+    assert post(client,f"/api/tracks/{t['id']}/request",{'request_kind':'album'}).status_code==200
+    row=client.get('/api/tracks').json['items'][0]
+    assert row['request_kind']=='album' and row['status']=='pending' and row['candidates']==[] and row['mbid'] is None
+    assert post(client,f"/api/tracks/{t['id']}/request",{'request_kind':'invalid'}).status_code==400
+    store.account('spotify',{})
+    monkeypatch.setitem(__import__('likebridge.engine',fromlist=['PROVIDERS']).PROVIDERS,'spotify',lambda *a:iter([{**TRACK,'source_id':'new'}]))
+    app.extensions['engine'].sync_provider('spotify')
+    with store.db() as db:
+        assert db.execute("SELECT request_kind FROM tracks WHERE source_id='new'").fetchone()[0]=='track'
+        assert db.execute('SELECT request_kind FROM tracks WHERE id=?',(t['id'],)).fetchone()[0]=='album'
+
+
+def test_track_resend_clears_only_recording_history_and_rejects_stale_album_choice(app,client):
+    store=app.extensions['store'];t=insert_track(store)
+    app.extensions['engine'].update(t['id'],request_kind='track',status='review',mbid=MBID,candidates=json.dumps([CANDIDATE]))
+    with store.db() as db:
+        db.execute('INSERT INTO deliveries VALUES (?,?,?,?)',(MBID,'sent','',time.time()))
+        db.execute('INSERT INTO deliveries VALUES (?,?,?,?)',('track:'+MBID,'uncertain','',time.time()))
+    assert post(client,f"/api/tracks/{t['id']}/allow_resend").status_code==200
+    assert post(client,f"/api/tracks/{t['id']}/approve",{'mbid':MBID}).status_code==400
+    with store.db() as db:
+        assert db.execute('SELECT status FROM deliveries WHERE mbid=?',(MBID,)).fetchone()[0]=='sent'
+        assert db.execute('SELECT COUNT(*) FROM deliveries WHERE mbid=?',('track:'+MBID,)).fetchone()[0]==0

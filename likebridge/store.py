@@ -50,6 +50,10 @@ class Store:
                 db.execute('ALTER TABLE tracks ADD COLUMN cover_url TEXT')
             if 'liked_at' not in columns:
                 db.execute('ALTER TABLE tracks ADD COLUMN liked_at REAL')
+            if 'request_kind' not in columns:
+                db.execute("ALTER TABLE tracks ADD COLUMN request_kind TEXT NOT NULL DEFAULT 'album'")
+            if 'track_artist' not in columns:
+                db.execute('ALTER TABLE tracks ADD COLUMN track_artist TEXT')
             db.execute('CREATE INDEX IF NOT EXISTS tracks_liked_at ON tracks(liked_at DESC, id ASC)')
         os.chmod(self.path, 0o600)
 
