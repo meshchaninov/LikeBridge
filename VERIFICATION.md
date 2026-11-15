@@ -58,3 +58,8 @@ The destination was migrated to DroppedNeedle v3.0.0 on 2026-11-15. Bearer authe
 
 - 48 tests pass, including candidate-bound preview lookup, authentication, preserved queue/delivery state, trusted audio URLs, missing samples, individual recording versions, and releasing the shared preview lock after lookup failures.
 - The installed destination's album-preview endpoint returns real album samples; the UI reuses the existing single 30-second player. No preview lookup happens while rendering the queue.
+
+## Automatic album-to-track fallback
+
+- 58 tests pass. Added coverage for absent and below-threshold albums, the exact recording threshold, persisted request kind before submission, restart/cross-provider deduplication, album priority, disabled automation/fallback, catalog outages, preserved manual album choices and uncertain-delivery protection. Existing album results are reused during recording lookup.
+- The setting defaults to enabled and can be disabled in the UI. Existing pending reviews are reconsidered once on upgrade, preserving the baseline list.

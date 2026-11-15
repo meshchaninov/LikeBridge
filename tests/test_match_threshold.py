@@ -7,7 +7,7 @@ from test_bridge import CANDIDATE, app, client, insert_track, post
 def test_threshold_boundary_accepts_best_without_score_gap(app, monkeypatch, score, expected):
     store = app.extensions['store']; engine = app.extensions['engine']
     t = insert_track(store)
-    store.put('sync', {'automatic': True, 'match_threshold': 70})
+    store.put('sync', {'automatic': True, 'match_threshold': 70, 'fallback_track': False})
     candidates = [{**CANDIDATE, 'confidence': score},
                   {**CANDIDATE, 'musicbrainz_id': 'b30d5bc0-9dab-4c58-bd1e-c2bd565281ce', 'confidence': score}]
     monkeypatch.setattr(engine.destination, 'search', lambda _: candidates)
@@ -34,7 +34,7 @@ def test_setting_requeues_only_eligible_reviews_and_respects_manual_mode(app, cl
         engine.update(row['id'], status=status, candidates=json.dumps([candidate]))
     with store.db() as db:
         db.execute('INSERT INTO deliveries VALUES (?, ?, ?, ?)', ('b30d5bc0-9dab-4c58-bd1e-c2bd565281ce', 'uncertain', '', 0))
-    cfg = {'interval': 3600, 'batch_size': 10, 'automatic': False, 'first_sync': 'baseline', 'match_threshold': 70}
+    cfg = {'interval': 3600, 'batch_size': 10, 'automatic': False, 'first_sync': 'baseline', 'match_threshold': 70, 'fallback_track': False}
     assert post(client, '/api/settings', cfg).json['requeued'] == 0
     assert not engine.reconsider_reviews()
     cfg['automatic'] = True
@@ -72,7 +72,7 @@ def test_existing_database_adopts_threshold_and_reconsiders_reviews_once(app, mo
     store = app.extensions['store']; engine = app.extensions['engine']
     row = insert_track(store)
     engine.update(row['id'], status='review', candidates=json.dumps([{**CANDIDATE, 'confidence': .8}]))
-    store.put('sync', {'interval': 3600, 'automatic': True, 'first_sync': 'baseline', 'batch_size': 10})
+    store.put('sync', {'interval': 3600, 'automatic': True, 'first_sync': 'baseline', 'batch_size': 10, 'fallback_track': False})
     monkeypatch.setattr(Engine, 'start', lambda _: None)
     create_app(store.directory, start_worker=True)
     assert store.get('sync')['match_threshold'] == 70

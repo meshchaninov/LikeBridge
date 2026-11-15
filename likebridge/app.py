@@ -104,7 +104,7 @@ def create_app(data_dir=None, start_worker=False):
     def health():
         with store.db() as db:
             db.execute('SELECT 1').fetchone()
-        return jsonify(status='ok', version='0.1.6')
+        return jsonify(status='ok', version='0.1.7')
 
     @app.get('/api/session')
     def get_session():
@@ -184,7 +184,10 @@ def create_app(data_dir=None, start_worker=False):
         threshold = float(threshold)
         if not threshold.is_integer() or not 0 <= threshold <= 100:
             raise ValueError()
-        cfg = {'match_threshold': int(threshold), 'request_kind': kind, 'interval': max(120, min(86400, int(data['interval']))),
+        fallback = data.get('fallback_track', engine.settings()['fallback_track'])
+        if not isinstance(fallback, bool):
+            raise ValueError()
+        cfg = {'fallback_track': fallback, 'match_threshold': int(threshold), 'request_kind': kind, 'interval': max(120, min(86400, int(data['interval']))),
                'batch_size': max(1, min(50, int(data['batch_size']))),
                'automatic': data.get('automatic') is True, 'first_sync': first}
         store.put('sync', cfg)
@@ -413,7 +416,7 @@ def create_app(data_dir=None, start_worker=False):
         return jsonify(ok=True, count=result.rowcount)
 
     if start_worker:
-        if 'match_threshold' not in store.get('sync', {}):
+        if any(key not in store.get('sync', {}) for key in ('match_threshold', 'fallback_track')):
             store.put('sync', engine.settings())
             engine.reconsider_reviews()
         engine.start()

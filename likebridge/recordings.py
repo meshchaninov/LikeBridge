@@ -27,9 +27,9 @@ def _unique(candidates):
     return sorted(best.values(), key=lambda c: c['confidence'], reverse=True)[:10]
 
 
-def _in_albums(destination, track):
+def _in_albums(destination, track, albums=None):
     candidates = []
-    for album in destination.search_albums(track)[:3]:
+    for album in (destination.search_albums(track) if albums is None else albums)[:3]:
         if album['confidence'] < .70:
             continue
         data = destination.call('GET', f"/albums/{album['musicbrainz_id']}/tracks")
@@ -94,10 +94,10 @@ def _search_musicbrainz(track, query=None):
     return _unique(candidates)
 
 
-def search_tracks(destination, track, query=None):
+def search_tracks(destination, track, query=None, albums=None):
     if query:
         return _search_musicbrainz(track, query)
-    candidates = _in_albums(destination, track)
+    candidates = _in_albums(destination, track, albums)
     if candidates and candidates[0]['confidence'] >= .98:
         return candidates
     # A recording may exist even if its single/album was not found by album search.

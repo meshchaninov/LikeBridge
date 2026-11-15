@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 from urllib.parse import urlparse
 from .providers import PROVIDERS, ProviderError, http
 
-DEFAULTS = {'interval': 600, 'automatic': True, 'first_sync': 'baseline', 'batch_size': 10, 'request_kind': 'album', 'match_threshold': 70}
+DEFAULTS = {'interval': 600, 'automatic': True, 'first_sync': 'baseline', 'batch_size': 10, 'request_kind': 'album', 'match_threshold': 70, 'fallback_track': True}
 
 
 def normal(value):
@@ -99,6 +99,10 @@ class Destination:
             from .recordings import search_tracks
             return search_tracks(self, track, query)
         return self.search_albums(track, query)
+
+    def search_track_fallback(self, track, albums):
+        from .recordings import search_tracks
+        return search_tracks(self, {**track, 'request_kind': 'track'}, albums=albums)
 
     def search_albums(self, track, query=None):
         data = self.call('GET', '/search', params={'q': query or f"{track['artist']} {track['album']}",
@@ -219,6 +223,16 @@ class Engine:
             db.execute('UPDATE tracks SET ' + ','.join(k + '=?' for k in fields) + ',updated=? WHERE id=?',
                        (*fields.values(), time.time(), track_id))
 
+    def track_fallback_enabled(self, track, cfg):
+        if not (cfg['automatic'] and cfg['fallback_track'] and track['request_kind'] == 'album'):
+            return False
+        if track.get('mbid'):
+            with self.store.db() as db:
+                previous = db.execute('SELECT status FROM deliveries WHERE mbid=?', (track['mbid'],)).fetchone()
+            if previous and previous['status'] == 'uncertain':
+                return False
+        return True
+
     def reconsider_reviews(self):
         """Re-search eligible reviews after saving automatic matching preferences."""
         cfg = self.settings()
@@ -232,11 +246,12 @@ class Engine:
                     candidates = json.loads(row['candidates'])
                 except (ValueError, TypeError):
                     continue
-                if not candidates or candidates[0].get('request_kind', 'album') != row['request_kind']:
+                if candidates and candidates[0].get('request_kind', 'album') != row['request_kind']:
                     continue
-                if not confident(candidates, cfg['match_threshold'] / 100, min_gap=0):
+                fallback = self.track_fallback_enabled(dict(row), cfg)
+                if not confident(candidates, cfg['match_threshold'] / 100, min_gap=0) and not fallback:
                     continue
-                mbid = candidates[0]['musicbrainz_id']
+                mbid = candidates[0]['musicbrainz_id'] if candidates else row['mbid']
                 delivery_id = 'track:' + mbid if row['request_kind'] == 'track' else mbid
                 previous = db.execute('SELECT status FROM deliveries WHERE mbid=?', (delivery_id,)).fetchone()
                 if previous and previous['status'] == 'uncertain':
@@ -256,6 +271,14 @@ class Engine:
             t = dict(row)
             try:
                 candidates = self.destination.search(t)
+                if not confident(candidates, cfg['match_threshold'] / 100, min_gap=0) and self.track_fallback_enabled(t, cfg):
+                    recordings = self.destination.search_track_fallback(t, candidates)
+                    if confident(recordings, cfg['match_threshold'] / 100, min_gap=0):
+                        # Persist the selected request kind before any submission or retry.
+                        t = {**t, 'request_kind': 'track', 'mbid': None}
+                        candidates = recordings
+                        self.update(t['id'], request_kind='track', mbid=None, candidates=json.dumps(candidates), error=None)
+                        self.store.event(f"{t['artist']} — {t['title']}: альбом не подобран, запрашиваем отдельный трек")
                 self.update(t['id'], candidates=json.dumps(candidates))
                 if cfg['automatic'] and confident(candidates, cfg['match_threshold'] / 100, min_gap=0):
                     self.deliver(t, candidates[0])
