@@ -82,12 +82,74 @@ function cover(value, mbid, small = false) {
 document.addEventListener('error', event => {
   if (event.target instanceof HTMLImageElement && event.target.closest('.album-cover')) event.target.remove();
 }, true);
+let activePreview = null;
+let previewGeneration = 0;
+const previewAudio = $('#preview-audio');
+function previewButtons() {
+  $$('[data-preview]').forEach(button => {
+    const active = activePreview?.id === button.dataset.preview;
+    button.disabled = Boolean(active && activePreview.loading);
+    button.setAttribute('aria-label', (active && !previewAudio.paused ? 'Приостановить фрагмент: ' : 'Прослушать фрагмент: ') + button.dataset.previewName);
+    button.textContent = active && activePreview.loading ? 'Ищем фрагмент…' : active && !previewAudio.paused ? 'Ⅱ Пауза' : '▶ Фрагмент';
+  });
+}
+function sourceURL(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password &&
+      ['music.yandex.ru','music.yandex.com','open.spotify.com','music.apple.com'].includes(url.hostname) ? url.href : '';
+  } catch (_) { return ''; }
+}
+function listenLinks(track) {
+  const query = encodeURIComponent(`${track.artist} ${track.title}`);
+  const source = sourceURL(track.source_url);
+  return `<div class="track-listen"><button class="secondary" data-preview="${track.id}" data-preview-name="${esc(track.artist + ' — ' + track.title)}" aria-label="Прослушать фрагмент: ${esc(track.artist)} — ${esc(track.title)}">▶ Фрагмент</button><a class="listen-link" href="https://www.youtube.com/results?search_query=${query}" target="_blank" rel="noopener noreferrer" aria-label="Найти ${esc(track.title)} на YouTube">YouTube ↗</a>${source ? `<a class="listen-link" href="${esc(source)}" target="_blank" rel="noopener noreferrer">${names[track.provider]} ↗</a>` : ''}</div>`;
+}
+function stopPreview() {
+  previewGeneration++;activePreview = null;previewAudio.pause();previewAudio.removeAttribute('src');previewAudio.load();
+  $('#preview-player').hidden = true;document.body.classList.remove('has-preview');previewButtons();
+}
+async function playPreview(button) {
+  const id = button.dataset.preview;
+  if (activePreview?.loading) {toast('Подожди, пока найдётся текущий фрагмент');return;}
+  if (activePreview?.id === id && previewAudio.getAttribute('src')) {
+    if (!previewAudio.paused) previewAudio.pause();
+    else {
+      if (previewAudio.currentTime >= 30) previewAudio.currentTime = 0;
+      try {await previewAudio.play();} catch (_) {toast('Нажми ▶ в плеере, чтобы начать прослушивание');}
+    }
+    previewButtons();return;
+  }
+  previewAudio.pause();previewAudio.removeAttribute('src');previewAudio.load();
+  const generation = ++previewGeneration;activePreview = {id,loading:true};previewButtons();
+  try {
+    const result = await api(`/api/tracks/${id}/preview`);
+    if(generation !== previewGeneration) return;
+    if (!result.available) {stopPreview();toast(result.message);return;}
+    activePreview = {id,loading:false};
+    $('#preview-title').textContent = `${result.artist} — ${result.title}`;
+    const provider = {deezer:'Deezer',itunes:'iTunes'}[result.provider] || result.provider;
+    $('#preview-credit').textContent = `Фрагмент до 30 с · предоставлен ${provider}`;
+    $('#preview-youtube').href = 'https://www.youtube.com/results?search_query=' + encodeURIComponent(`${result.artist} ${result.title}`);
+    $('#preview-player').hidden = false;document.body.classList.add('has-preview');
+    previewAudio.src = result.preview_url;
+    try {await previewAudio.play();} catch (_) {toast('Фрагмент готов. Нажми ▶ в плеере');}
+  } catch (error) {if(generation === previewGeneration){stopPreview();toast(error.message);}}
+  finally {if (generation === previewGeneration && activePreview) activePreview.loading = false;previewButtons();}
+}
+previewAudio.addEventListener('timeupdate', () => {if (previewAudio.currentTime >= 30 && !previewAudio.paused) previewAudio.pause();});
+previewAudio.addEventListener('play', () => {if(previewAudio.currentTime >= 30)previewAudio.currentTime=0;previewButtons();});
+previewAudio.addEventListener('pause', previewButtons);
+previewAudio.addEventListener('ended', previewButtons);
+previewAudio.addEventListener('error', () => {if(previewAudio.getAttribute('src')){stopPreview();toast('Фрагмент недоступен. Попробуй YouTube или исходный сервис.');}});
+$('#preview-close').onclick = stopPreview;
 async function loadTracks() {
   const result = await api(`/api/tracks?status=${encodeURIComponent($('#status-filter').value)}&page=${currentPage}`);
-  $('#tracks').innerHTML = result.items.length ? result.items.map(t => `<article class="panel track" data-track="${t.id}"><div class="track-heading">${cover(t.cover_url, t.mbid)}<div class="track-info"><h3>${esc(t.album)}</h3><p class="muted">${esc(t.artist)} ${t.year ? '· '+esc(t.year) : ''}</p><p class="muted">♡ ${esc(t.title)} · ${names[t.provider] || esc(t.provider)}</p><p class="muted liked-date">${esc(likedDate(t.liked_at))}</p></div><span class="tag ${esc(t.status)}">${statuses[t.status] || esc(t.status)}</span></div>${t.error ? `<p class="error-text">${esc(t.error)}</p>` : ''}${t.status === 'review' ? `<div class="candidates">${t.candidates.map(c => `<div class="candidate">${cover(c.cover_url || c.album_thumb_url, c.musicbrainz_id, true)}<div class="candidate-info">${esc(c.title)}<small>${esc(c.artist)} ${c.year ? '· '+esc(c.year) : ''} · ${Math.round(c.confidence * 100)}% совпадения ${c.type_info ? '· '+esc(c.type_info) : ''}</small></div><button class="secondary" data-approve="${esc(c.musicbrainz_id)}">Выбрать ↗</button></div>`).join('')}</div><form class="search-row"><label>Поиск другого альбома<input name="query" value="${esc(t.artist + ' ' + t.album)}" required></label><button type="submit" class="secondary">Найти</button></form>` : ''}<div class="track-actions">${['sent','existing','duplicate'].includes(t.status) ? '' : '<button class="secondary" data-track-action="retry">'+(t.status === 'baseline' ? 'Обработать этот лайк' : 'Повторить поиск')+'</button><button class="text" data-track-action="skip">Пропустить</button>'}${t.mbid && ['retry','review'].includes(t.status) ? '<button class="text" data-track-action="allow_resend">Разрешить повторную заявку</button>' : ''}${t.mbid ? `<a class="text" href="https://musicbrainz.org/release-group/${encodeURIComponent(t.mbid)}" target="_blank" rel="noopener noreferrer">MusicBrainz ↗</a>` : ''}</div></article>`).join('') : '<div class="panel empty">Здесь пока нет треков.<br>Подключи аккаунт или выбери другой фильтр.</div>';
+  $('#tracks').innerHTML = result.items.length ? result.items.map(t => `<article class="panel track" data-track="${t.id}"><div class="track-heading">${cover(t.cover_url, t.mbid)}<div class="track-info"><h3>${esc(t.album)}</h3><p class="muted">${esc(t.artist)} ${t.year ? '· '+esc(t.year) : ''}</p><p class="muted">♡ ${esc(t.title)} · ${names[t.provider] || esc(t.provider)}</p><p class="muted liked-date">${esc(likedDate(t.liked_at))}</p></div><span class="tag ${esc(t.status)}">${statuses[t.status] || esc(t.status)}</span></div>${listenLinks(t)}${t.error ? `<p class="error-text">${esc(t.error)}</p>` : ''}${t.status === 'review' ? `<div class="candidates">${t.candidates.map(c => `<div class="candidate">${cover(c.cover_url || c.album_thumb_url, c.musicbrainz_id, true)}<div class="candidate-info">${esc(c.title)}<small>${esc(c.artist)} ${c.year ? '· '+esc(c.year) : ''} · ${Math.round(c.confidence * 100)}% совпадения ${c.type_info ? '· '+esc(c.type_info) : ''}</small></div><button class="secondary" data-approve="${esc(c.musicbrainz_id)}">Выбрать ↗</button></div>`).join('')}</div><form class="search-row"><label>Поиск другого альбома<input name="query" value="${esc(t.artist + ' ' + t.album)}" required></label><button type="submit" class="secondary">Найти</button></form>` : ''}<div class="track-actions">${['sent','existing','duplicate'].includes(t.status) ? '' : '<button class="secondary" data-track-action="retry">'+(t.status === 'baseline' ? 'Обработать этот лайк' : 'Повторить поиск')+'</button><button class="text" data-track-action="skip">Пропустить</button>'}${t.mbid && ['retry','review'].includes(t.status) ? '<button class="text" data-track-action="allow_resend">Разрешить повторную заявку</button>' : ''}${t.mbid ? `<a class="text" href="https://musicbrainz.org/release-group/${encodeURIComponent(t.mbid)}" target="_blank" rel="noopener noreferrer">MusicBrainz ↗</a>` : ''}</div></article>`).join('') : '<div class="panel empty">Здесь пока нет треков.<br>Подключи аккаунт или выбери другой фильтр.</div>';
   $('#page-info').textContent = `${result.total} треков · страница ${currentPage + 1}`;
   $('#prev').disabled = currentPage === 0;$('#next').disabled = (currentPage + 1) * 30 >= result.total;
   $('#process-baseline').disabled = !state.counts?.baseline;
+  previewButtons();
 }
 function dialog(title, body) {$('#dialog-title').textContent = title;$('#dialog-body').innerHTML = body;$('#connect-dialog').showModal();}
 function connection(provider) {
@@ -116,6 +178,7 @@ document.addEventListener('click', event => {
   if (button.dataset.view) showView(button.dataset.view).catch(e => toast(e.message));
   if (button.dataset.connect) connection(button.dataset.connect);
   if (button.dataset.disconnect && confirm(`Отключить ${names[button.dataset.disconnect]}? История и файлы сохранятся.`)) action(button, async () => {await api(`/api/accounts/${button.dataset.disconnect}/disconnect`,{});toast('Аккаунт отключён');await refresh();});
+  if (button.dataset.preview) {playPreview(button);return;}
   const track = button.closest('[data-track]');
   if (track && (button.dataset.trackAction || button.dataset.approve)) action(button, async () => {
     const operation = button.dataset.approve ? 'approve' : button.dataset.trackAction;
@@ -128,7 +191,7 @@ document.addEventListener('submit', event => {
   action($('button',form), async () => {await api(`/api/tracks/${form.closest('[data-track]').dataset.track}/search`,Object.fromEntries(new FormData(form)));await loadTracks();});
 });
 $('#login-form').onsubmit = e => {e.preventDefault();action($('button',e.target), async () => {try {const data = await api('/api/login',{password:$('#login-password').value,setup_token:$('#setup-token').value});csrf=data.csrf;showApp();await refresh();}catch(error){$('#login-error').textContent=error.message;}});};
-$('#logout').onclick = () => action($('#logout'), async () => {await api('/api/logout',{});const data=await api('/api/session');csrf=data.csrf;showLogin(false);});
+$('#logout').onclick = () => action($('#logout'), async () => {stopPreview();await api('/api/logout',{});const data=await api('/api/session');csrf=data.csrf;showLogin(false);});
 $('#sync').onclick = () => action($('#sync'), async () => {const data=await api('/api/sync',{});toast(data.message);setTimeout(() => refresh().catch(e=>toast(e.message)),600);});
 $('#settings-form').onsubmit = e => {e.preventDefault();action($('button[type=submit]',e.target), async () => {const f=e.target;await api('/api/settings',{interval:Number(f.elements.interval.value),batch_size:Number(f.elements.batch_size.value),first_sync:f.elements.first_sync.value,automatic:f.elements.automatic.checked});toast('Настройки сохранены');await refresh();});};
 $('#destination-form').onsubmit = e => {e.preventDefault();action($('button[type=submit]',e.target), async () => {const data = await api('/api/destination',Object.fromEntries(new FormData(e.target)));e.target.elements.password.value='';e.target.elements.token.value='';toast(`DroppedNeedle подключён${data.role ? ' · роль '+data.role : ''}`);await refresh();});};

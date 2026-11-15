@@ -98,7 +98,9 @@ def yandex_tracks(store, c):
                 if not t.albums:
                     continue
                 a = t.albums[0]
-                yield {'source_id': str(t.id), 'title': t.title,
+                version = getattr(t, 'version', None)
+                title = f'{t.title} ({version})' if version and version.casefold() not in t.title.casefold() else t.title
+                yield {'source_id': str(t.id), 'title': title,
                        'liked_at': dates.get(str(t.id)),
                        'artist': ', '.join(x.name for x in (a.artists or t.artists)),
                        'album': a.title, 'year': a.year,

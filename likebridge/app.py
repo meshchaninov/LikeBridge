@@ -14,6 +14,7 @@ from flask import Flask, jsonify, redirect, render_template, request, session
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 from .store import Store
+from .previews import resolve_preview
 from .engine import Engine, validate_url, valid_mbid
 from .providers import PROVIDERS, ProviderError, apple_playlists, http
 
@@ -31,6 +32,7 @@ def create_app(data_dir=None, start_worker=False):
                       PERMANENT_SESSION_LIFETIME=timedelta(days=7))
     engine = Engine(store)
     app.extensions.update(store=store, engine=engine)
+    preview_lock = threading.Lock()
     login_failures = deque(maxlen=100)
     failures_lock = threading.Lock()
 
@@ -79,6 +81,7 @@ def create_app(data_dir=None, start_worker=False):
         response.headers['Content-Security-Policy'] = (
             "default-src 'self'; script-src 'self' https://js-cdn.music.apple.com; "
             "connect-src 'self' https://*.apple.com https://*.mzstatic.com; "
+            "media-src https://*.dzcdn.net https://*.itunes.apple.com https://*.mzstatic.com; "
             "style-src 'self'; img-src 'self' data: https://*.mzstatic.com https://i.scdn.co https://avatars.yandex.net https://avatars.mds.yandex.net https://avatars.mds.yandex.com https://coverartarchive.org https://*.archive.org; "
             "frame-src https://*.apple.com; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
         return response
@@ -101,7 +104,7 @@ def create_app(data_dir=None, start_worker=False):
     def health():
         with store.db() as db:
             db.execute('SELECT 1').fetchone()
-        return jsonify(status='ok', version='0.1.3')
+        return jsonify(status='ok', version='0.1.4')
 
     @app.get('/api/session')
     def get_session():
@@ -308,6 +311,19 @@ def create_app(data_dir=None, start_worker=False):
             t['candidates'] = json.loads(t['candidates'])
             items.append(t)
         return jsonify(items=items, total=total, page=page)
+
+    @app.get('/api/tracks/<int:track_id>/preview')
+    def track_preview(track_id):
+        with store.db() as db:
+            row = db.execute('SELECT title,artist FROM tracks WHERE id=?', (track_id,)).fetchone()
+        if not row:
+            return jsonify(error='Трек не найден'), 404
+        if not preview_lock.acquire(blocking=False):
+            return jsonify(error='Уже ищем фрагмент. Подождите несколько секунд.'), 429
+        try:
+            return jsonify(resolve_preview(dict(row), engine.destination))
+        finally:
+            preview_lock.release()
 
     @app.post('/api/tracks/<int:track_id>/<action>')
     def track_action(track_id, action):

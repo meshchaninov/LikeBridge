@@ -135,6 +135,9 @@ class Engine:
                     (provider,source_id,title,artist,album,year,source_url,status,created,updated)
                     VALUES (?,?,?,?,?,?,?,?,?,?)''', (provider, t['source_id'], t['title'], t['artist'], t['album'],
                     t.get('year'), t.get('source_url', ''), 'baseline' if baseline else 'pending', now, now))
+                # Version names are needed for preview/searching the actual liked recording.
+                db.execute('UPDATE tracks SET title=? WHERE provider=? AND source_id=? AND title<>?',
+                           (t['title'], provider, t['source_id'], t['title']))
                 if t.get('cover_url'):
                     # Refresh artwork for old likes without changing processing state.
                     db.execute('UPDATE tracks SET cover_url=? WHERE provider=? AND source_id=?',

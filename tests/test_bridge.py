@@ -206,10 +206,11 @@ def test_yandex_metadata_batches_preserve_album(monkeypatch):
         def users_likes_tracks(self): return N(tracks=[N(id=i,track_id=f'{i}:42',timestamp='2024-03-01T12:30:00+03:00') for i in range(51)])
         def tracks(self,ids):
             seen.append(ids)
-            return [N(id=x.split(':')[0],title='Song',albums=[N(id=42,title='Album',year=2020,cover_uri='avatars.yandex.net/get-music-content/example/%%',artists=[N(name='Artist')])],artists=[]) for x in ids]
+            return [N(id=x.split(':')[0],title='Song',version='Radio Edit',albums=[N(id=42,title='Album',year=2020,cover_uri='avatars.yandex.net/get-music-content/example/%%',artists=[N(name='Artist')])],artists=[]) for x in ids]
     monkeypatch.setattr(yandex_music,'Client',FakeClient)
     result=list(yandex_tracks(None,{'token':'test-token'}))
     assert len(result)==51 and [len(x) for x in seen]==[50,1]
+    assert result[0]['title']=='Song (Radio Edit)'
     assert result[0]['cover_url']=='https://avatars.yandex.net/get-music-content/example/300x300'
     assert result[0]['liked_at']==1709285400
     assert result[0]['album']=='Album' and result[0]['source_url'].endswith('/album/42/track/0')
@@ -255,12 +256,13 @@ def test_cover_upgrade_preserves_existing_queue_and_backfills_old_likes(tmp_path
     migrated.account('spotify', {})
     image = 'https://i.scdn.co/image/example'
     monkeypatch.setitem(__import__('likebridge.engine', fromlist=['PROVIDERS']).PROVIDERS,
-                        'spotify', lambda *args: iter([{**TRACK, 'cover_url': image, 'liked_at': 1709285400}]))
+                        'spotify', lambda *args: iter([{**TRACK, 'title':'Song (Radio Edit)', 'cover_url': image, 'liked_at': 1709285400}]))
     Engine(migrated).sync_provider('spotify')
     with migrated.db() as db:
         rows = db.execute('SELECT status,mbid,cover_url,liked_at FROM tracks').fetchall()
         assert len(rows) == 1
         assert tuple(rows[0]) == ('sent', MBID, image, 1709285400)
+        assert db.execute('SELECT title FROM tracks').fetchone()[0]=='Song (Radio Edit)'
         assert db.execute('SELECT status FROM deliveries').fetchone()[0] == 'sent'
     assert Store(tmp_path)  # Additive upgrade is idempotent.
 
@@ -320,3 +322,61 @@ def test_yandex_like_dates_follow_ids_when_metadata_response_is_reordered(monkey
     monkeypatch.setattr(yandex_music,'Client',FakeClient)
     tracks = list(yandex_tracks(None, {'token':'test'}))
     assert {t['source_id']: t['liked_at'] for t in tracks} == {'1':1709285400,'2':1709371800}
+
+
+def test_preview_resolver_accepts_short_https_samples_without_downloading_audio():
+    from likebridge.previews import resolve_preview
+    calls = []
+    class Destination:
+        def call(self, method, path, **kwargs):
+            calls.append((method,path,kwargs))
+            return {'preview_url':'https://cdnt-preview.dzcdn.net/sample.mp3?hdnea=short-lived',
+                    'title':'Song (feat. Guest)', 'provider':'deezer', 'duration_s':90}
+    result = resolve_preview(TRACK, Destination())
+    assert result['available'] and result['duration_s'] == 30
+    assert calls == [('GET','/discover/track-preview',{'params':{'artist':'Artist','track':'Song'}})]
+
+
+def test_preview_resolver_rejects_wrong_versions_and_untrusted_urls():
+    from likebridge.previews import resolve_preview
+    class Destination:
+        response = {}
+        def call(self,*args,**kwargs): return self.response
+    destination=Destination()
+    for url,title in [('https://audio-ssl.itunes.apple.com/sample.m4a','Song (Live)'),
+                      ('http://cdnt-preview.dzcdn.net/sample.mp3','Song'),
+                      ('https://evil.example/sample.mp3','Song'),
+                      ('https://cdnt-preview.dzcdn.net.evil.example/sample.mp3','Song'),
+                      ('https://user:secret@cdnt-preview.dzcdn.net/sample.mp3','Song'),
+                      ('https://cdnt-preview.dzcdn.net:bad/sample.mp3','Song'),
+                      ('','Song')]:
+        destination.response={'preview_url':url,'title':title}
+        assert resolve_preview(TRACK,destination)['available'] is False
+
+
+def test_preview_endpoint_is_authenticated_on_demand_and_preserves_queue(app,client,monkeypatch):
+    t=insert_track(app.extensions['store'])
+    calls=[]
+    def lookup(*args,**kwargs):
+        calls.append(args)
+        return {'preview_url':'https://audio-ssl.itunes.apple.com/sample.m4a','title':'Song','provider':'itunes'}
+    monkeypatch.setattr(app.extensions['engine'].destination,'call',lookup)
+    assert app.test_client().get(f"/api/tracks/{t['id']}/preview").status_code==401
+    assert client.get('/api/tracks').status_code==200 and calls==[]
+    result=client.get(f"/api/tracks/{t['id']}/preview")
+    assert result.status_code==200 and result.json['available'] and result.json['provider']=='itunes'
+    assert client.get('/api/tracks/999999/preview').status_code==404
+    assert client.get('/api/tracks').json['items'][0]['status']=='pending'
+    assert 'media-src https://*.dzcdn.net' in client.get('/').headers['Content-Security-Policy']
+
+
+def test_preview_failure_releases_lookup_lock_and_does_not_poison_sync(app,client,monkeypatch):
+    t=insert_track(app.extensions['store'])
+    def failure(*args,**kwargs):raise ProviderError('Сервис недоступен')
+    monkeypatch.setattr(app.extensions['engine'].destination,'call',failure)
+    assert client.get(f"/api/tracks/{t['id']}/preview").status_code==502
+    monkeypatch.setattr(app.extensions['engine'].destination,'call',lambda *a,**kw:{})
+    result=client.get(f"/api/tracks/{t['id']}/preview")
+    assert result.status_code==200 and result.json['available'] is False
+    assert app.extensions['engine'].lock.acquire(blocking=False)
+    app.extensions['engine'].lock.release()

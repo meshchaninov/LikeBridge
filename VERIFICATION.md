@@ -34,3 +34,10 @@ The deployed destination uses the v1 API. The configurable v3 option has not bee
 - 19 tests pass. Added coverage for source timestamps and timezone conversion, mixed-provider date ordering across pages, and Yandex metadata arriving in a different order from liked-track IDs.
 - The database upgrade preserves existing queue/delivery states and fills dates during the next provider synchronization.
 - Queue and processing order use the real source like timestamp, newest first. Missing source dates are shown explicitly and sorted last; import time is not used as a substitute.
+
+## Short track previews
+
+- Previews are resolved on demand via the existing destination, never downloaded or proxied through this application. A single browser player limits playback to 30 seconds. Every track also has a YouTube search link and an original-service link when available.
+- Tests cover authentication, explicit/on-demand lookup, missing previews, matching track versions, trusted HTTPS audio hosts, preserved queue state and lookup recovery after failure.
+
+- 23 tests pass, including preservation of source recording versions for preview matching. Real browser playback was verified: an audio sample loaded and ended at approximately 30 seconds, without errors; closing the player releases its audio source.
