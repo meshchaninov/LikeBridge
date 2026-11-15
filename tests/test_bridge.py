@@ -131,11 +131,12 @@ def test_spotify_refresh_and_pagination(tmp_path,monkeypatch):
         calls.append((method,url,kw))
         if method=='POST': return {'access_token':'new','refresh_token':'rotated','expires_in':3600}
         if 'offset' in url: return {'items':[{'track':{'id':'two','name':'Song2','album':{'name':'Album','artists':[{'name':'Artist'}],'release_date':'2020','images':None}}}],'next':None}
-        return {'items':[{'track':None},{'track':{'id':'one','name':'Song','album':{'name':'Album','artists':[{'name':'Artist'}],'release_date':'2020','images':[{'url':'https://i.scdn.co/large','width':640},{'url':'https://i.scdn.co/medium','width':300},{'url':'https://i.scdn.co/small','width':64}]}}}], 'next':'https://api.spotify.com/v1/me/tracks?offset=50'}
+        return {'items':[{'track':None},{'added_at':'2024-03-01T09:30:00Z','track':{'id':'one','name':'Song','album':{'name':'Album','artists':[{'name':'Artist'}],'release_date':'2020','images':[{'url':'https://i.scdn.co/large','width':640},{'url':'https://i.scdn.co/medium','width':300},{'url':'https://i.scdn.co/small','width':64}]}}}], 'next':'https://api.spotify.com/v1/me/tracks?offset=50'}
     monkeypatch.setattr('likebridge.providers.http',fake)
     items=list(spotify_tracks(store,{'refresh_token':'old','client_id':'id'}))
     assert [t['source_id'] for t in items]==['one','two']
     assert items[0]['cover_url']=='https://i.scdn.co/medium'
+    assert items[0]['liked_at']==1709285400
     assert store.credentials('spotify')['refresh_token']=='rotated'
     assert calls[1][2]['headers']['Authorization']=='Bearer new'
 
@@ -202,7 +203,7 @@ def test_yandex_metadata_batches_preserve_album(monkeypatch):
     class FakeClient:
         def __init__(self,token): assert token=='test-token'
         def init(self): return self
-        def users_likes_tracks(self): return N(tracks=[N(track_id=f'{i}:42') for i in range(51)])
+        def users_likes_tracks(self): return N(tracks=[N(id=i,track_id=f'{i}:42',timestamp='2024-03-01T12:30:00+03:00') for i in range(51)])
         def tracks(self,ids):
             seen.append(ids)
             return [N(id=x.split(':')[0],title='Song',albums=[N(id=42,title='Album',year=2020,cover_uri='avatars.yandex.net/get-music-content/example/%%',artists=[N(name='Artist')])],artists=[]) for x in ids]
@@ -210,6 +211,7 @@ def test_yandex_metadata_batches_preserve_album(monkeypatch):
     result=list(yandex_tracks(None,{'token':'test-token'}))
     assert len(result)==51 and [len(x) for x in seen]==[50,1]
     assert result[0]['cover_url']=='https://avatars.yandex.net/get-music-content/example/300x300'
+    assert result[0]['liked_at']==1709285400
     assert result[0]['album']=='Album' and result[0]['source_url'].endswith('/album/42/track/0')
 
 
@@ -246,17 +248,19 @@ def test_cover_upgrade_preserves_existing_queue_and_backfills_old_likes(tmp_path
     Engine(store).update(track['id'], status='sent', mbid=MBID)
     with store.db() as db:
         db.execute('ALTER TABLE tracks DROP COLUMN cover_url')
+        db.execute('DROP INDEX tracks_liked_at')
+        db.execute('ALTER TABLE tracks DROP COLUMN liked_at')
         db.execute('INSERT INTO deliveries VALUES (?,?,?,?)', (MBID, 'sent', '', time.time()))
     migrated = Store(tmp_path)
     migrated.account('spotify', {})
     image = 'https://i.scdn.co/image/example'
     monkeypatch.setitem(__import__('likebridge.engine', fromlist=['PROVIDERS']).PROVIDERS,
-                        'spotify', lambda *args: iter([{**TRACK, 'cover_url': image}]))
+                        'spotify', lambda *args: iter([{**TRACK, 'cover_url': image, 'liked_at': 1709285400}]))
     Engine(migrated).sync_provider('spotify')
     with migrated.db() as db:
-        rows = db.execute('SELECT status,mbid,cover_url FROM tracks').fetchall()
+        rows = db.execute('SELECT status,mbid,cover_url,liked_at FROM tracks').fetchall()
         assert len(rows) == 1
-        assert tuple(rows[0]) == ('sent', MBID, image)
+        assert tuple(rows[0]) == ('sent', MBID, image, 1709285400)
         assert db.execute('SELECT status FROM deliveries').fetchone()[0] == 'sent'
     assert Store(tmp_path)  # Additive upgrade is idempotent.
 
@@ -274,3 +278,45 @@ def test_queue_api_and_candidate_ranking_keep_cover_urls(app, client):
     assert result['candidates'][0]['cover_url'] == image
     assert 'https://i.scdn.co' in client.get('/').headers['Content-Security-Policy']
     assert 'https://coverartarchive.org' in client.get('/').headers['Content-Security-Policy']
+
+
+def test_like_timestamp_uses_source_timezone_and_rejects_unknown_dates():
+    from likebridge.providers import like_timestamp
+    assert like_timestamp('2024-03-01T12:30:00+03:00') == like_timestamp('2024-03-01T09:30:00Z') == 1709285400
+    for value in (None, '', 'not-a-date', '2024-03-01T09:30:00', '0000-01-01T00:00:00Z'):
+        assert like_timestamp(value) is None
+
+
+def test_queue_orders_mixed_sources_by_like_date_across_pages(app, client):
+    store = app.extensions['store']
+    # IDs/import times deliberately have the opposite order to the source likes.
+    for n in range(34):
+        t = insert_track(store, source_id=str(n), provider='spotify' if n % 2 else 'yandex')
+        with store.db() as db:
+            db.execute('UPDATE tracks SET liked_at=?,status=? WHERE id=?', (1709285400 - n, 'baseline', t['id']))
+    unknown = insert_track(store, source_id='unknown-date')
+    first = client.get('/api/tracks?status=baseline').json['items']
+    second = client.get('/api/tracks?page=1').json['items']
+    assert [x['source_id'] for x in first] == [str(n) for n in range(30)]
+    assert [x['source_id'] for x in second] == ['30', '31', '32', '33', 'unknown-date']
+    assert second[-1]['liked_at'] is None
+    # Re-import timestamps or processing updates must not influence like order.
+    app.extensions['engine'].update(unknown['id'], status='review')
+    assert client.get('/api/tracks').json['items'][0]['source_id'] == '0'
+
+
+def test_yandex_like_dates_follow_ids_when_metadata_response_is_reordered(monkeypatch):
+    import yandex_music
+    from types import SimpleNamespace as N
+    class FakeClient:
+        def __init__(self, token): pass
+        def init(self): return self
+        def users_likes_tracks(self):
+            return N(tracks=[N(id=1,track_id='1:42',timestamp='2024-03-01T09:30:00Z'),
+                             N(id=2,track_id='2:42',timestamp='2024-03-02T09:30:00Z')])
+        def tracks(self, ids):
+            return [N(id=i,title='Song',albums=[N(id=42,title='Album',year=2020,artists=[N(name='Artist')])],artists=[])
+                    for i in (2,1)]
+    monkeypatch.setattr(yandex_music,'Client',FakeClient)
+    tracks = list(yandex_tracks(None, {'token':'test'}))
+    assert {t['source_id']: t['liked_at'] for t in tracks} == {'1':1709285400,'2':1709371800}

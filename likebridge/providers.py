@@ -1,5 +1,6 @@
 """Provider adapters. Stream pages; never keep a complete library in memory."""
 import time
+from datetime import datetime
 from urllib.parse import urlparse
 import requests
 
@@ -32,6 +33,20 @@ def year(value):
         return None
 
 
+def like_timestamp(value):
+    """Use only a source timestamp with an explicit timezone; never import time."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            return None
+        timestamp = parsed.timestamp()
+        return timestamp if timestamp > 0 else None
+    except (ValueError, OverflowError):
+        return None
+
+
 def spotify_access(store, c):
     if c.get('expires_at', 0) > time.time() + 60:
         return c['access_token']
@@ -59,6 +74,7 @@ def spotify_tracks(store, c):
             if not t.get('id') or not a.get('name'):
                 continue
             yield {'source_id': str(t['id']), 'title': t['name'],
+                   'liked_at': like_timestamp(item.get('added_at')),
                    'artist': ', '.join(x['name'] for x in (a.get('artists') or t.get('artists') or [])),
                    'album': a['name'], 'year': year(a.get('release_date')),
                    'source_url': t.get('external_urls', {}).get('spotify', ''),
@@ -75,12 +91,15 @@ def yandex_tracks(store, c):
         # Only ID metadata is returned by Yandex in the first call; fetch full tracks in batches.
         entries = liked.tracks if liked else []
         for offset in range(0, len(entries), 50):
-            batch = client.tracks([x.track_id for x in entries[offset:offset + 50]])
+            short_tracks = entries[offset:offset + 50]
+            dates = {str(x.id): like_timestamp(getattr(x, 'timestamp', None)) for x in short_tracks}
+            batch = client.tracks([x.track_id for x in short_tracks])
             for t in batch or []:
                 if not t.albums:
                     continue
                 a = t.albums[0]
                 yield {'source_id': str(t.id), 'title': t.title,
+                       'liked_at': dates.get(str(t.id)),
                        'artist': ', '.join(x.name for x in (a.artists or t.artists)),
                        'album': a.title, 'year': a.year,
                        'source_url': f'https://music.yandex.ru/album/{a.id}/track/{t.id}',

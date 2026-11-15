@@ -139,6 +139,9 @@ class Engine:
                     # Refresh artwork for old likes without changing processing state.
                     db.execute('UPDATE tracks SET cover_url=? WHERE provider=? AND source_id=?',
                                (t['cover_url'], provider, t['source_id']))
+                if t.get('liked_at') is not None:
+                    db.execute('UPDATE tracks SET liked_at=? WHERE provider=? AND source_id=?',
+                               (t['liked_at'], provider, t['source_id']))
             count += 1
         with self.store.db() as db:
             db.execute('UPDATE accounts SET initialized=1,last_sync=?,error=NULL,count=? WHERE provider=?',
@@ -182,7 +185,7 @@ class Engine:
     def process(self):
         cfg = self.settings()
         with self.store.db() as db:
-            rows = db.execute("SELECT * FROM tracks WHERE status IN ('pending','retry') AND next_try<=? ORDER BY id LIMIT ?",
+            rows = db.execute("SELECT * FROM tracks WHERE status IN ('pending','retry') AND next_try<=? ORDER BY liked_at DESC, id ASC LIMIT ?",
                               (time.time(), cfg['batch_size'])).fetchall()
         for row in rows:
             if self.stop.is_set():

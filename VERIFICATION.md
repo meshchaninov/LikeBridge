@@ -28,3 +28,9 @@ The deployed destination uses the v1 API. The configurable v3 option has not bee
 - 16 tests pass, including upgrading an existing database and refreshing artwork without resetting queue status or delivery history.
 - Spotify, Yandex and Apple adapters retain album artwork; ranked destination candidates retain artwork metadata.
 - Queue thumbnails load lazily in the browser. Missing or broken images use a fixed-size placeholder; no image cache or additional service is introduced.
+
+## Like-date ordering update
+
+- 19 tests pass. Added coverage for source timestamps and timezone conversion, mixed-provider date ordering across pages, and Yandex metadata arriving in a different order from liked-track IDs.
+- The database upgrade preserves existing queue/delivery states and fills dates during the next provider synchronization.
+- Queue and processing order use the real source like timestamp, newest first. Missing source dates are shown explicitly and sorted last; import time is not used as a substitute.

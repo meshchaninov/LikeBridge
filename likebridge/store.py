@@ -48,6 +48,9 @@ class Store:
             columns = {row['name'] for row in db.execute('PRAGMA table_info(tracks)')}
             if 'cover_url' not in columns:
                 db.execute('ALTER TABLE tracks ADD COLUMN cover_url TEXT')
+            if 'liked_at' not in columns:
+                db.execute('ALTER TABLE tracks ADD COLUMN liked_at REAL')
+            db.execute('CREATE INDEX IF NOT EXISTS tracks_liked_at ON tracks(liked_at DESC, id ASC)')
         os.chmod(self.path, 0o600)
 
     @contextlib.contextmanager

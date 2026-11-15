@@ -101,7 +101,7 @@ def create_app(data_dir=None, start_worker=False):
     def health():
         with store.db() as db:
             db.execute('SELECT 1').fetchone()
-        return jsonify(status='ok', version='0.1.2')
+        return jsonify(status='ok', version='0.1.3')
 
     @app.get('/api/session')
     def get_session():
@@ -301,7 +301,7 @@ def create_app(data_dir=None, start_worker=False):
         params = (status,) if status else ()
         with store.db() as db:
             total = db.execute(f'SELECT COUNT(*) FROM tracks {where}', params).fetchone()[0]
-            rows = db.execute(f'SELECT * FROM tracks {where} ORDER BY id DESC LIMIT 30 OFFSET ?', (*params, page * 30)).fetchall()
+            rows = db.execute(f'SELECT * FROM tracks {where} ORDER BY liked_at DESC, id ASC LIMIT 30 OFFSET ?', (*params, page * 30)).fetchall()
         items = []
         for row in rows:
             t = dict(row)
