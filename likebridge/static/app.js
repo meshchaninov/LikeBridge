@@ -90,7 +90,7 @@ function previewButtons() {
     const active = activePreview?.id === button.dataset.preview;
     button.disabled = Boolean(active && activePreview.loading);
     button.setAttribute('aria-label', (active && !previewAudio.paused ? 'Приостановить фрагмент: ' : 'Прослушать фрагмент: ') + button.dataset.previewName);
-    button.textContent = active && activePreview.loading ? 'Ищем фрагмент…' : active && !previewAudio.paused ? 'Ⅱ Пауза' : '▶ Фрагмент';
+    button.textContent = active && activePreview.loading ? 'Ищем фрагмент…' : active && !previewAudio.paused ? 'Ⅱ Пауза' : '▶ ' + (button.dataset.previewLabel || 'Фрагмент');
   });
 }
 function sourceURL(value) {
@@ -124,13 +124,16 @@ async function playPreview(button) {
   previewAudio.pause();previewAudio.removeAttribute('src');previewAudio.load();
   const generation = ++previewGeneration;activePreview = {id,loading:true};previewButtons();
   try {
-    const result = await api(`/api/tracks/${id}/preview`);
+    const candidate = button.dataset.previewCandidate;
+    const trackId = button.closest('[data-track]').dataset.track;
+    const path = candidate ? `/api/tracks/${trackId}/candidates/${encodeURIComponent(candidate)}/preview` : `/api/tracks/${trackId}/preview`;
+    const result = await api(path);
     if(generation !== previewGeneration) return;
     if (!result.available) {stopPreview();toast(result.message);return;}
     activePreview = {id,loading:false};
     $('#preview-title').textContent = `${result.artist} — ${result.title}`;
     const provider = {deezer:'Deezer',itunes:'iTunes'}[result.provider] || result.provider;
-    $('#preview-credit').textContent = `Фрагмент до 30 с · предоставлен ${provider}`;
+    $('#preview-credit').textContent = `${result.album_title ? result.album_title + ' · ' : ''}Фрагмент до 30 с · предоставлен ${provider}`;
     $('#preview-youtube').href = 'https://www.youtube.com/results?search_query=' + encodeURIComponent(`${result.artist} ${result.title}`);
     $('#preview-player').hidden = false;document.body.classList.add('has-preview');
     previewAudio.src = result.preview_url;
@@ -151,7 +154,7 @@ function requestChoices(track) {
 }
 function candidateHTML(candidate, track) {
   const kind = track.request_kind || 'album';
-  return `<div class="candidate">${cover(candidate.cover_url || candidate.album_thumb_url, kind === 'track' ? candidate.release_group_mbid : candidate.musicbrainz_id, true)}<div class="candidate-info">${esc(candidate.title)}<small>${esc(candidate.artist)} ${candidate.year ? '· '+esc(candidate.year) : ''} · ${Math.round(candidate.confidence * 100)}% совпадения ${kind === 'track' ? '· '+esc(candidate.album_title || 'Одиночный трек') : candidate.type_info ? '· '+esc(candidate.type_info) : ''}</small></div><button class="secondary" data-approve="${esc(candidate.musicbrainz_id)}">${kind === 'track' ? 'Этот трек' : 'Выбрать'} ↗</button></div>`;
+  return `<div class="candidate">${cover(candidate.cover_url || candidate.album_thumb_url, kind === 'track' ? candidate.release_group_mbid : candidate.musicbrainz_id, true)}<div class="candidate-info">${esc(candidate.title)}<small>${esc(candidate.artist)} ${candidate.year ? '· '+esc(candidate.year) : ''} · ${Math.round(candidate.confidence * 100)}% совпадения ${kind === 'track' ? '· '+esc(candidate.album_title || 'Одиночный трек') : candidate.type_info ? '· '+esc(candidate.type_info) : ''}</small></div><div class="candidate-actions"><button class="secondary" data-preview="${track.id}:${esc(candidate.musicbrainz_id)}" data-preview-candidate="${esc(candidate.musicbrainz_id)}" data-preview-label="Пример" data-preview-name="${esc(candidate.artist + ' — ' + candidate.title)}" aria-label="Прослушать пример: ${esc(candidate.artist)} — ${esc(candidate.title)}">▶ Пример</button><a class="listen-link" href="https://www.youtube.com/results?search_query=${encodeURIComponent(candidate.artist + ' ' + candidate.title)}" target="_blank" rel="noopener noreferrer" aria-label="Найти вариант ${esc(candidate.title)} на YouTube">YouTube ↗</a><button class="secondary" data-approve="${esc(candidate.musicbrainz_id)}">${kind === 'track' ? 'Этот трек' : 'Выбрать'} ↗</button></div></div>`;
 }
 async function loadTracks() {
   const result = await api(`/api/tracks?status=${encodeURIComponent($('#status-filter').value)}&page=${currentPage}`);

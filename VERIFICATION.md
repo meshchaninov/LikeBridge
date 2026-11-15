@@ -53,3 +53,8 @@ The destination was migrated to DroppedNeedle v3.0.0 on 2026-11-15. Bearer authe
 - 44 automated tests pass. Coverage includes the exact 70% boundary, rejection below the threshold, near-tied candidates, disabled automation, validation of out-of-range and non-finite values, and selective reprocessing of reviews while preserving baseline, skipped, completed and uncertain-delivery records.
 - Saving the threshold and preserving it after a browser reload were verified through the local UI. Existing settings adopt the 70% default once while retaining the sync interval.
 - The Linux amd64 image starts locally and returns a healthy HTTP response with the 70% default. Server deployment keeps the existing 128 MiB RAM limit and data volume.
+
+## Candidate album samples
+
+- 48 tests pass, including candidate-bound preview lookup, authentication, preserved queue/delivery state, trusted audio URLs, missing samples, individual recording versions, and releasing the shared preview lock after lookup failures.
+- The installed destination's album-preview endpoint returns real album samples; the UI reuses the existing single 30-second player. No preview lookup happens while rendering the queue.

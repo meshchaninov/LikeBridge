@@ -14,7 +14,7 @@ from flask import Flask, jsonify, redirect, render_template, request, session
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 from .store import Store
-from .previews import resolve_preview
+from .previews import resolve_preview, resolve_candidate_preview
 from .engine import Engine, validate_url, valid_mbid
 from .providers import PROVIDERS, ProviderError, apple_playlists, http
 
@@ -104,7 +104,7 @@ def create_app(data_dir=None, start_worker=False):
     def health():
         with store.db() as db:
             db.execute('SELECT 1').fetchone()
-        return jsonify(status='ok', version='0.1.5')
+        return jsonify(status='ok', version='0.1.6')
 
     @app.get('/api/session')
     def get_session():
@@ -334,6 +334,25 @@ def create_app(data_dir=None, start_worker=False):
             return jsonify(error='Уже ищем фрагмент. Подождите несколько секунд.'), 429
         try:
             return jsonify(resolve_preview(dict(row), engine.destination))
+        finally:
+            preview_lock.release()
+
+    @app.get('/api/tracks/<int:track_id>/candidates/<mbid>/preview')
+    def candidate_preview(track_id, mbid):
+        if not valid_mbid(mbid):
+            raise ValueError()
+        with store.db() as db:
+            row = db.execute('SELECT request_kind,candidates FROM tracks WHERE id=?', (track_id,)).fetchone()
+        if not row:
+            return jsonify(error='Трек не найден'), 404
+        candidate = next((c for c in json.loads(row['candidates']) if c['musicbrainz_id'] == mbid and
+                          c.get('request_kind', 'album') == row['request_kind']), None)
+        if not candidate:
+            return jsonify(error='Вариант больше недоступен. Повторите поиск.'), 404
+        if not preview_lock.acquire(blocking=False):
+            return jsonify(error='Уже ищем фрагмент. Подождите несколько секунд.'), 429
+        try:
+            return jsonify(resolve_candidate_preview(candidate, engine.destination))
         finally:
             preview_lock.release()
 
