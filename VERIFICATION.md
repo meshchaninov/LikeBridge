@@ -63,3 +63,8 @@ The destination was migrated to DroppedNeedle v3.0.0 on 2026-11-15. Bearer authe
 
 - 58 tests pass. Added coverage for absent and below-threshold albums, the exact recording threshold, persisted request kind before submission, restart/cross-provider deduplication, album priority, disabled automation/fallback, catalog outages, preserved manual album choices and uncertain-delivery protection. Existing album results are reused during recording lookup.
 - The setting defaults to enabled and can be disabled in the UI. Existing pending reviews are reconsidered once on upgrade, preserving the baseline list.
+
+## Recording lookup recovery
+
+- 63 tests pass. Explicit `(original mix)`, `[Original Version]` and `- Original Mix` labels now match the default recording in album/recording lookup and previews. Live, remix, radio edit, extended and remastered labels remain distinct in normalization.
+- The default manual query uses the source album first, avoiding an unnecessary secondary catalogue call. Custom queries retain their search text. A secondary MusicBrainz outage preserves already-found recording candidates; when there are none, the error identifies MusicBrainz.

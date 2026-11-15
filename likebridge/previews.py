@@ -4,12 +4,12 @@ Only metadata crosses this service. Audio streams directly from a provider CDN.
 """
 import re
 from urllib.parse import urlparse
-from .engine import normal
+from .engine import recording_title
 
 
 def preview_title(title):
     # Featured-artist annotations may differ across catalogues; versions must match.
-    return normal(re.sub(r'\s*[\[(](?:feat\.?|ft\.?|featuring)\s+[^\])]+[\])]', '', title or '', flags=re.I))
+    return recording_title(re.sub(r'\s*[\[(](?:feat\.?|ft\.?|featuring)\s+[^\])]+[\])]', '', title or '', flags=re.I))
 
 
 def resolve_preview(track, destination):

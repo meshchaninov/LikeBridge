@@ -3,7 +3,7 @@ import re
 import threading
 import time
 from difflib import SequenceMatcher
-from .engine import normal, valid_mbid
+from .engine import normal, valid_mbid, recording_title
 from .providers import http, ProviderError, year
 
 _musicbrainz_lock = threading.Lock()
@@ -37,7 +37,7 @@ def _in_albums(destination, track, albums=None):
             raise ProviderError('Каталог временно недоступен. Повторим поиск трека позже.')
         for recording in data.get('tracks', []):
             rid = recording.get('recording_id')
-            title_score = _ratio(track['title'], recording.get('title'))
+            title_score = _ratio(recording_title(track['title']), recording_title(recording.get('title')))
             if not valid_mbid(rid) or title_score < .55:
                 continue
             candidates.append({
@@ -63,16 +63,19 @@ def _search_musicbrainz(track, query=None):
     with _musicbrainz_lock:
         time.sleep(max(0, 1.1 - (time.monotonic() - _last_search)))
         _last_search = time.monotonic()
-        payload = http('GET', 'https://musicbrainz.org/ws/2/recording', params={
-            'query': query or f'recording:"{_quote(track["title"])}" AND artist:"{_quote(track_artist(track))}"',
-            'fmt': 'json', 'limit': 10}, headers={
-                'User-Agent': 'LikeBridge/0.1.5 (https://github.com/meshchaninov/LikeBridge)'})
+        try:
+            payload = http('GET', 'https://musicbrainz.org/ws/2/recording', params={
+                'query': query or f'recording:"{_quote(track["title"])}" AND artist:"{_quote(track_artist(track))}"',
+                'fmt': 'json', 'limit': 10}, headers={
+                    'User-Agent': 'LikeBridge/0.1 (https://github.com/meshchaninov/LikeBridge)'})
+        except ProviderError as exc:
+            raise ProviderError(f'MusicBrainz — поиск трека временно недоступен. {exc}') from None
     candidates = []
     for recording in payload.get('recordings', []):
         rid = recording.get('id')
         credits = recording.get('artist-credit') or []
         artist = ''.join((c.get('name') or c.get('artist', {}).get('name', '')) + c.get('joinphrase', '') for c in credits)
-        title_score = _ratio(track['title'], recording.get('title'))
+        title_score = _ratio(recording_title(track['title']), recording_title(recording.get('title')))
         artist_score = _ratio(track_artist(track), artist)
         if not valid_mbid(rid) or title_score < .55 or artist_score < .55:
             continue
@@ -95,10 +98,15 @@ def _search_musicbrainz(track, query=None):
 
 
 def search_tracks(destination, track, query=None, albums=None):
-    if query:
+    if query and normal(query) not in (normal(track['title']), normal(f"{track_artist(track)} {track['title']}")):
         return _search_musicbrainz(track, query)
     candidates = _in_albums(destination, track, albums)
     if candidates and candidates[0]['confidence'] >= .98:
         return candidates
     # A recording may exist even if its single/album was not found by album search.
-    return _unique(candidates + _search_musicbrainz(track))
+    try:
+        return _unique(candidates + _search_musicbrainz(track))
+    except ProviderError:
+        if candidates:
+            return candidates
+        raise

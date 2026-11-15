@@ -15,6 +15,13 @@ def normal(value):
     return re.sub(r'[^\w]+', ' ', unicodedata.normalize('NFKC', value or '').casefold()).strip()
 
 
+def recording_title(value):
+    # An explicit original mix/version is the default recording, unlike remixes or live edits.
+    value = re.sub(r'\s*(?:[\[(]original\s+(?:mix|version)[\])]|[-–—]\s*original\s+(?:mix|version))\s*$',
+                   '', value or '', flags=re.I)
+    return normal(value)
+
+
 def valid_mbid(value):
     try:
         return str(uuid.UUID(str(value))) == str(value).lower()
