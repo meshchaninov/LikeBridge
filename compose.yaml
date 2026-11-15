@@ -1,6 +1,6 @@
 services:
   likebridge:
-    image: likebridge:0.1.1
+    image: likebridge:0.1.2
     build: .
     container_name: likebridge
     restart: unless-stopped

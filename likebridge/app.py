@@ -101,7 +101,7 @@ def create_app(data_dir=None, start_worker=False):
     def health():
         with store.db() as db:
             db.execute('SELECT 1').fetchone()
-        return jsonify(status='ok', version='0.1.1')
+        return jsonify(status='ok', version='0.1.2')
 
     @app.get('/api/session')
     def get_session():
